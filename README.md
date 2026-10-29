@@ -6,7 +6,7 @@ were written on them, in full.
 
 ```
 new ticket ─► clean text ─► bge-m3 embedding ─► metadata filter ─► exact cosine ranking
-          ─► top 5 resolved tickets ─► linked articles (ranked) ─► JSON / Streamlit UI
+          ─► top 5 resolved tickets ─► all their articles (looked up by TicketNumber) ─► JSON / Streamlit UI
           ─► (optional) AI advisor: all 5 tickets + all their articles ─► LLM ─► grounded next step
 ```
 
@@ -251,18 +251,18 @@ search method and how many tickets each level added.
   remain. `retrieval_status` is then `partial` or `no_results`, with an explanation in `warnings`.
 
 ### 4.5 Articles
-For the selected tickets, every article with the same `TicketNumber` is
-fetched, de-duplicated by `Id`, and ranked:
+**Articles are not embedded.** Only tickets are embedded and searched.
+Articles are stored in `cleaned_articles.parquet`, sorted by `TicketNumber`, so
+all articles of a ticket can be looked up directly. For the selected tickets,
+every article with the same `TicketNumber` is fetched and de-duplicated by `Id`:
 
-```
-relevance = (w_source × similarity of its ticket + w_article × cosine(new ticket, article text)) / (w_source + w_article)
-```
+* each ticket carries **all** its `articles` with the full `BodyText_article`,
+  in the order they were written (the resolution sequence);
+* `article_ranking` lists every article (without body), most similar source
+  ticket first, with `source_ticket_similarity`.
 
-(`article_ranking.mode`: `combined` | `source_ticket` | `article_text`). This
-way a very relevant article from a slightly less similar ticket can still
-rank near the top. Each ticket carries its own `articles` (full
-`BodyText_article`). `article_ranking` lists every article in overall order.
-If a ticket has no article, this is stated explicitly.
+`article_retrieval.max_articles_per_ticket: 0` returns all articles. If a
+ticket has no article, this is stated explicitly.
 
 ### 4.6 AI advisor (`llm_advisor.py`, section `llm:` in config.yaml)
 This follows the TRS_V3.0 integration (same OpenAI-compatible gateway, model
@@ -329,12 +329,11 @@ IDs are compared as strings exactly as they appear in the source (`"1"`, `"46"`,
       "matched_filters": ["IspId", "TicketTypeId", "CallReasonId", "TechnologyType"],
       "articles": [
         {"Id": "123", "Title_article": "...", "ArticleTypeId": "1", "BodyText_article": "full text ...",
-         "TicketNumber": "T25...", "source_ticket_similarity": 0.8312,
-         "article_similarity": 0.71, "relevance_score": 0.7706}
+         "TicketNumber": "T25...", "CreateDate": "2025-...", "source_ticket_similarity": 0.8312}
       ]
     }
   ],
-  "article_ranking": [{"Id": "123", "TicketNumber": "T25...", "Title_article": "...", "relevance_score": 0.7706}],
+  "article_ranking": [{"Id": "123", "TicketNumber": "T25...", "Title_article": "...", "source_ticket_similarity": 0.8312}],
   "filter_trace": [{"filters": ["..."], "relaxed": [], "candidates": 12, "search_method": "exact", "tickets_added": 3}],
   "warnings": [],
   "index": {"index_version": 1, "dataset_version": "20261029T...", "model": "BAAI/bge-m3"}
@@ -381,10 +380,9 @@ added than the index was trained on. Articles are refreshed after each update.
 * Embedding (CPU): batches of `embedding.batch_size` texts, length-sorted so
   there is little padding, using all cores. Shards of `shard_rows` make the
   long run resumable.
-* Query time on CPU: one query embedding plus the embeddings of the linked
-  articles for ranking, typically 0.5–3 s. If articles are long, lower
-  `article_ranking.max_chars_for_embedding`, or use `mode: source_ticket`
-  (no article embedding at all).
+* Query time on CPU: one embedding (the new ticket) plus the vector search
+  and a Parquet lookup of the articles, typically well under a second after
+  the model is loaded. Articles are never embedded.
 * Storage: 909k × 1024 × float16 ≈ 1.9 GB on disk, memory-mapped at query time.
 * FAISS: an exact `Flat` index up to 1.5M vectors (~3.8 GB RAM as float32). Above
   that, `IVF` (`ivf_flat`, or `ivf_sq8` for 4× less RAM) with `ivf_nprobe` to trade speed against recall.

@@ -62,9 +62,32 @@ def resolve_files(patterns: list[str] | str) -> list[Path]:
     return sorted(f for f in files if f.is_file())
 
 
-def _alias_lookup(section: dict) -> dict[str, str]:
+def columns_to_read(kind: str, cfg: Config) -> list[str]:
+    """keep_columns plus every column an enabled rule needs.
+
+    A column needed by a cleaning rule or a metadata filter is always read, even
+    when it was left out of keep_columns, so trimming that list cannot break a rule.
+    """
+    needed = list(cfg[kind]["keep_columns"])
+    if kind == "tickets":
+        rules = cfg["cleaning"]
+        eligibility = rules.get("eligibility", {})
+        needed += ["State"] if eligibility.get("allowed_states") else []
+        needed += ["SubState"] if eligibility.get("excluded_substates") else []
+        needed += ["CloseDate"] if eligibility.get("require_close_date") else []
+        needed += [rules["dedupe_order_column"]] if rules.get("dedupe_order_column") else []
+        needed += list(rules.get("mandatory_fields", []))
+        needed += list(cfg["filters"].get("fields", []))
+        needed += ["AdditionalInformation"] if cfg["text"].get("include_additional_information") else []
+    else:
+        needed += ["CreateDate"]
+        needed += ["ArticleTypeId"] if cfg["articles"].get("exclude_article_type_ids") else []
+    return list(dict.fromkeys(needed))
+
+
+def _alias_lookup(section: dict, columns: list[str]) -> dict[str, str]:
     """Map every known name (canonical and aliases) to its canonical name."""
-    lookup = {_key(name): name for name in section["keep_columns"]}
+    lookup = {_key(name): name for name in columns}
     for canonical, aliases in (section.get("aliases") or {}).items():
         lookup[_key(canonical)] = canonical
         for alias in aliases:
@@ -72,12 +95,12 @@ def _alias_lookup(section: dict) -> dict[str, str]:
     return lookup
 
 
-def inspect_schema(file: Path, section: dict, csv_cfg: dict) -> CsvSchema:
+def inspect_schema(file: Path, section: dict, csv_cfg: dict, columns: list[str]) -> CsvSchema:
     with open(file, encoding=csv_cfg["encoding"], errors="replace", newline="") as handle:
         first_row = next(csv.reader(handle, delimiter=csv_cfg["delimiter"]), [])
     first_row = [col.strip().strip('"') for col in first_row]
 
-    lookup = _alias_lookup(section)
+    lookup = _alias_lookup(section, columns)
     recognised = sum(1 for col in first_row if _key(col) in lookup)
     has_header = section.get("has_header", "auto")
     if has_header == "auto":
@@ -93,7 +116,7 @@ def inspect_schema(file: Path, section: dict, csv_cfg: dict) -> CsvSchema:
                 f"config lists {len(source_columns)} columns. Update the 'columns' list."
             )
 
-    keep = set(section["keep_columns"])
+    keep = set(columns)
     mapping: dict[str, str] = {}
     for col in source_columns:
         canonical = lookup.get(_key(col))
@@ -107,7 +130,7 @@ def inspect_schema(file: Path, section: dict, csv_cfg: dict) -> CsvSchema:
         has_header=bool(has_header),
         mapping=mapping,
         missing_required=[c for c in required if c not in present],
-        missing_optional=[c for c in section["keep_columns"] if c not in present and c not in required],
+        missing_optional=[c for c in columns if c not in present and c not in required],
         unmapped_columns=[c for c in source_columns if c not in mapping],
     )
 
@@ -115,16 +138,20 @@ def inspect_schema(file: Path, section: dict, csv_cfg: dict) -> CsvSchema:
 def iter_csv_chunks(kind: str, cfg: Config, files: list[Path] | None = None) -> Iterator[tuple[CsvSchema, pd.DataFrame]]:
     """Yield (schema, chunk) for every chunk of every file of `kind` ("tickets" or "articles").
 
-    Chunks contain every column in keep_columns (missing optional ones as None),
-    all values as strings, nothing parsed or converted yet.
+    Chunks contain every column from columns_to_read() (missing optional ones
+    as None), all values as strings, nothing parsed or converted yet.
     """
     section, csv_cfg = cfg[kind], cfg["csv"]
+    columns = columns_to_read(kind, cfg)
+    added = [c for c in columns if c not in section["keep_columns"]]
+    if added:
+        log.info("Also reading %s (needed by the cleaning/filter rules)", added)
     files = files if files is not None else resolve_files(cfg["paths"][f"{kind}_csv"])
     if not files:
         raise FileNotFoundError(f"No {kind} CSV files match {cfg['paths'][f'{kind}_csv']}")
 
     for file in files:
-        schema = inspect_schema(file, section, csv_cfg)
+        schema = inspect_schema(file, section, csv_cfg, columns)
         if schema.missing_required:
             raise SchemaError(f"{file.name}: required {kind} columns missing: {schema.missing_required}")
         if schema.missing_optional:
@@ -148,7 +175,7 @@ def iter_csv_chunks(kind: str, cfg: Config, files: list[Path] | None = None) -> 
         )
         for chunk in reader:
             chunk = chunk.rename(columns=schema.mapping)
-            for col in section["keep_columns"]:
+            for col in columns:
                 if col not in chunk.columns:
                     chunk[col] = None
-            yield schema, chunk[section["keep_columns"]]
+            yield schema, chunk[columns]

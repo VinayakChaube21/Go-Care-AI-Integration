@@ -55,7 +55,7 @@ class RecommendationService:
         self.embedder.check_matches_probe(self.store.manifest.get("probe_embedding"),
                                           strict=self.cfg["embedding"].get("strict_model_check", True))
         self.filter = MetadataFilter(self.store.metadata, self.cfg["filters"], self.cfg.null_tokens)
-        self.articles = ArticleRetriever(self.cfg, self.embedder)
+        self.articles = ArticleRetriever(self.cfg)
 
     def _check_build_settings(self) -> None:
         manifest = self.store.manifest
@@ -186,19 +186,19 @@ class RecommendationService:
                            f"weaker matches are not returned to fill the list.")
 
     # ---- step 2: articles ------------------------------------------------------
-    def get_relevant_articles(self, similar_tickets: list[dict], query_vector: np.ndarray | None = None):
-        return self.articles.get_relevant_articles(similar_tickets, query_vector)
+    def get_relevant_articles(self, similar_tickets: list[dict]):
+        return self.articles.get_relevant_articles(similar_tickets)
 
     # ---- full pipeline ---------------------------------------------------------
     def recommend_resolution(self, new_ticket: dict, top_k: int | None = None, **overrides) -> dict:
         started = time.time()
         try:
-            result, query_vector = self._find_similar(new_ticket, top_k, **overrides)
+            result, _ = self._find_similar(new_ticket, top_k, **overrides)
         except InvalidTicketError as exc:
             return {"query_ticket": (new_ticket or {}).get("TicketNumber") if isinstance(new_ticket, dict) else None,
                     "retrieval_status": "invalid_input", "similar_tickets": [], "warnings": [str(exc)]}
 
-        by_ticket, ranking, article_warnings = self.get_relevant_articles(result["similar_tickets"], query_vector)
+        by_ticket, ranking, article_warnings = self.get_relevant_articles(result["similar_tickets"])
         for ticket in result["similar_tickets"]:
             ticket["articles"] = by_ticket.get(ticket["TicketNumber"], [])
             if self.articles.available and not ticket["articles"]:

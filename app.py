@@ -205,18 +205,18 @@ for rank, ticket in enumerate(tickets, start=1):
             st.text(ticket.get("BodyText_ticket") or "")
 
         articles = ticket.get("articles", [])
-        st.markdown(f"**Resolution articles ({len(articles)})**")
+        st.markdown(f"**Resolution articles ({len(articles)}), in the order they were written**")
         if not articles:
             st.caption(ticket.get("articles_note") or "No linked resolution article found.")
         for article in articles:
             with st.container(border=True):
                 st.markdown(f"**{md(article.get('Title_article') or '(no title)')}**  \n"
                             f"Article {article['Id']} · type {article.get('ArticleTypeId')} · "
-                            f"{article.get('CreateDate') or ''} · relevance {article.get('relevance_score')}")
+                            f"{article.get('CreateDate') or ''}")
                 st.text(article.get("BodyText_article") or "")
 
 if response.get("article_ranking"):
-    with st.expander("All articles ranked by relevance"):
+    with st.expander("All articles (most similar ticket first)"):
         st.dataframe(pd.DataFrame(response["article_ranking"]), hide_index=True, width="stretch")
 
 download = dict(response)

@@ -124,13 +124,6 @@ def build_ticket_text(title, description, text_cfg: dict, additional_information
     return "\n".join(parts)
 
 
-def build_article_text(title, body, max_chars: int) -> str:
-    """Text used to rank an article against the incoming ticket (not stored)."""
-    title, body = clean_markup(title), clean_markup(body)
-    text = f"Title: {title}\nContent: {body}" if title else f"Content: {body}"
-    return text[:max_chars]
-
-
 def text_hash(text: str) -> str:
     return hashlib.sha1(text.encode("utf-8")).hexdigest()
 

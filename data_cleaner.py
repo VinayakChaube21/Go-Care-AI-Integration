@@ -16,7 +16,7 @@ from pathlib import Path
 import pandas as pd
 
 from config import Config
-from data_loader import iter_csv_chunks
+from data_loader import columns_to_read, iter_csv_chunks
 from ticket_preprocessor import build_ticket_text, clean_markup, mask_personal_data, text_hash
 
 log = logging.getLogger(__name__)
@@ -124,7 +124,8 @@ def clean_tickets(cfg: Config, files: list[Path] | None = None) -> CleanResult:
 
         df = df.copy()
         for col in TICKET_TEXT_COLUMNS:
-            df[col] = [clean_markup(v) for v in df[col]]
+            if col in df.columns:
+                df[col] = [clean_markup(v) for v in df[col]]
         df = exclusions.drop(df, (df["Title_ticket"] == "") & (df["BodyText_ticket"] == ""),
                              "empty_title_and_description")
         if noise_title is not None:
@@ -133,16 +134,16 @@ def clean_tickets(cfg: Config, files: list[Path] | None = None) -> CleanResult:
         if df.empty:
             continue
 
+        extra = df["AdditionalInformation"] if "AdditionalInformation" in df.columns else [None] * len(df)
         df["ticket_text"] = [
-            build_ticket_text(t, b, text_cfg, a)
-            for t, b, a in zip(df["Title_ticket"], df["BodyText_ticket"], df["AdditionalInformation"])
+            build_ticket_text(t, b, text_cfg, a) for t, b, a in zip(df["Title_ticket"], df["BodyText_ticket"], extra)
         ]
         text_len = df["ticket_text"].str.replace(r"^(Title|Description): ", "", regex=True).str.len()
         df = exclusions.drop(df, text_len < min_chars, "text_too_short")
         parts.append(df)
         log.info("Tickets read: %s | kept so far: %s", f"{input_rows:,}", f"{sum(map(len, parts)):,}")
 
-    tickets = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=cfg["tickets"]["keep_columns"])
+    tickets = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=columns_to_read("tickets", cfg))
     tickets, duplicate_ids = _dedupe(tickets, "TicketNumber", rules.get("dedupe_order_column"))
 
     duplicate_text = 0
@@ -206,7 +207,7 @@ def clean_articles(cfg: Config, ticket_ids: set[str] | None = None, files: list[
         parts.append(df)
         log.info("Articles read: %s | kept so far: %s", f"{input_rows:,}", f"{sum(map(len, parts)):,}")
 
-    articles = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=acfg["keep_columns"])
+    articles = pd.concat(parts, ignore_index=True) if parts else pd.DataFrame(columns=columns_to_read("articles", cfg))
     articles, duplicate_ids = _dedupe(articles, "Id", "CreateDate")
     articles["content_hash"] = [
         text_hash(f"{t}\n{b}\n{ty}") for t, b, ty in

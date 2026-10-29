@@ -280,8 +280,12 @@ class VectorStore:
 
     def ticket_details(self, ticket_numbers: list[str], columns: list[str] | None = None) -> pd.DataFrame:
         """Full ticket rows (incl. text) from cleaned_tickets.parquet, read via row-group pruning."""
+        path = self.cfg.artifact(CLEANED_TICKETS)
+        stored = set(pq.read_schema(path).names)
+        wanted = columns or sorted(stored)
         if not ticket_numbers:
-            return pd.DataFrame(columns=columns or [])
-        table = pq.read_table(self.cfg.artifact(CLEANED_TICKETS), columns=columns,
+            return pd.DataFrame(columns=wanted)
+        table = pq.read_table(path, columns=[c for c in wanted if c in stored],
                               filters=[("TicketNumber", "in", list(ticket_numbers))])
-        return table.to_pandas()
+        # Columns that were not kept during cleaning come back empty instead of failing.
+        return table.to_pandas().reindex(columns=wanted)

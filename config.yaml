@@ -198,17 +198,10 @@ retrieval:
                   NetworkOperator, CallReasonId, RootCauseId, TechnologyType,
                   SolutionId, TicketQueueId, State, SubState, CloseDate]
 
-article_ranking:
-  # combined      = weighted mix of source-ticket similarity and article-text similarity
-  # source_ticket = article inherits the similarity of its ticket
-  # article_text  = cosine between the incoming ticket and the article text
-  mode: combined
-  source_ticket_weight: 0.5
-  article_text_weight: 0.5
-  # Only the first N characters are embedded for ranking (on CPU this is the
-  # main query-time cost); the full article text is always returned.
-  max_chars_for_embedding: 1000
-  max_articles_per_ticket: 25
+article_retrieval:
+  # Articles are not embedded: they are fetched by TicketNumber for the similar
+  # tickets and returned in full, in the order they were written.
+  max_articles_per_ticket: 0   # 0 = return all articles of a ticket
 
 # -----------------------------------------------------------------------------
 # AI resolution advisor (llm_advisor.py)
