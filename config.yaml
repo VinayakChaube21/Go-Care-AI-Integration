@@ -1,0 +1,255 @@
+# =============================================================================
+# Go-Care AI Ticket Recommendation System - settings
+# Every script reads this file. Relative paths resolve against the project root.
+# Use another file with:  GOCARE_CONFIG=/path/to/config.yaml  or  --config PATH
+# =============================================================================
+
+paths:
+  # Glob patterns; every matching file is loaded. Several files are combined.
+  tickets_csv: ["Raw Data/Tickets*.csv"]
+  # Articles are optional. When no file matches, the article stage is skipped
+  # and can be run later with:  python build_index.py --stage articles
+  articles_csv: ["Raw Data/Article*.csv"]
+  artifacts_dir: artifacts
+  log_dir: artifacts/logs
+
+csv:
+  encoding: utf-8-sig          # handles the BOM in the Go-Care export
+  delimiter: ","
+  chunk_size: 200000           # rows per pandas chunk while reading
+  # Values that mean "no value" in the source system.
+  null_tokens: ["", "NULL", "null", "NaN", "nan", "None", "none", "N/A"]
+
+# -----------------------------------------------------------------------------
+# Ticket CSV schema
+# -----------------------------------------------------------------------------
+tickets:
+  # auto -> the first row is a header if it contains known column names.
+  # The current export (Tickets_oct26.csv) has NO header row.
+  has_header: auto
+  # Column order used when the file has no header. Verified against the
+  # Go-Care Ticket export (53 columns, same order as TRS_V3.0 Ticket_*.csv).
+  columns: [TicketNumber, TicketNumberEx, IsParentTicket, Title, TicketTypeId,
+            TicketQueueId, CreateDate, HoldDueDate, CloseDate, ResponsibleAgent,
+            PriorityId, BodyText, LockedBy, SolutionId, RootCauseId, ConnectionId,
+            IspId, IspCustomerId, RowVersion, ParentTicketNumber, InitiatorId,
+            ContactPersonId, CallReasonId, Jeopardy_ProgressCodeAtCreation,
+            Jeopardy_ProgressCodeAtClosure, Jeopardy_OrderProductId, NetworkOperator,
+            KnownCustomerActiveDate, AdditionalInformation, State, SubState,
+            CustomerFeedbackId, Jeopardy_ProductGroup, TechnologyType,
+            Address_PostalCode, Address_Street, Address_HouseNumber,
+            Address_HouseNumberExtension, Address_City, TemporaryReassign_StartDate,
+            TemporaryReassign_EndDate, TemporaryReassign_FromAgent,
+            TemporaryReassign_ToAgent, Pop, SplitFromTicketNumber, LastStateChangeDate,
+            DraftApprovedDate, Address_Room, ServiceProblemNumber,
+            NoLongerPendingOnDate, ChildTicketCount, CfsId, ServiceNow]
+  # canonical name -> other names it may have in a CSV. Matching ignores case,
+  # spaces and underscores. A canonical name always matches itself.
+  aliases:
+    TicketNumber: [Ticket_Number, TicketId, Ticket]
+    Title_ticket: [Title, TicketTitle, Subject]
+    BodyText_ticket: [BodyText, Description, Body, TicketBody]
+  # Missing required columns stop the run with an error.
+  required_columns: [TicketNumber, Title_ticket, BodyText_ticket]
+  # Only these canonical columns are read from disk; everything else is ignored.
+  # Missing optional ones are reported in cleaning_report.json.
+  keep_columns: [TicketNumber, Title_ticket, BodyText_ticket, 
+                 TicketTypeId, TicketQueueId, CreateDate,
+                 RootCauseId, IspId, CallReasonId, 
+                 IsParentTicket, NetworkOperator, TechnologyType]
+
+# -----------------------------------------------------------------------------
+# Article CSV schema (resolution articles / work notes, many per ticket)
+# -----------------------------------------------------------------------------
+articles:
+  has_header: auto
+  # Column order of the Go-Care Article export, used only when it has no header.
+  columns: [Id, Title, ArticleTypeId, CreatedBy, CreateDate, BodyText, 
+            TicketNumber]
+  aliases:
+    Id: [ArticleId, Article_Id]
+    Title_article: [Title, ArticleTitle]
+    BodyText_article: [BodyText, ArticleBody, Body]
+  required_columns: [Id, TicketNumber, BodyText_article]
+  keep_columns: [Id, Title_article, BodyText_article, ArticleTypeId, TicketNumber,
+                 CreateDate, IsSupplementary]
+  # Article types to leave out, e.g. ["2"]. Empty = keep every type.
+  exclude_article_type_ids: []
+  # Keep only articles whose TicketNumber is in the ticket index.
+  restrict_to_indexed_tickets: true
+  # Articles are shown to agents in full, so personal data is not masked by default.
+  mask_pii: false
+
+# -----------------------------------------------------------------------------
+# Cleaning rules for the historical resolution index
+# -----------------------------------------------------------------------------
+cleaning:
+  eligibility:
+    # Only tickets that reached an outcome are useful as history.
+    # Observed states: Closed, Open, Pending, New, Reopened, Draft.
+    allowed_states: [Closed]
+    # Closed sub-states to exclude, e.g. [NoCustomerResponse, BySystem].
+    excluded_substates: []
+    require_close_date: true
+  # Rows missing any of these fields are excluded. Add RootCauseId here only
+  # if your filtering strategy requires it on every historical ticket.
+  mandatory_fields: [TicketNumber]
+  # Titles matching these patterns (case-insensitive) are test/noise tickets.
+  drop_title_patterns: ['^\s*(test|testje|dummy|dummie)\b', '^\s*x{3,}\s*$']
+  # Minimum characters in cleaned title + description.
+  min_text_chars: 15
+  # Duplicate TicketNumbers: keep the row with the latest value in this column.
+  dedupe_order_column: LastStateChangeDate
+  # Also drop tickets whose ticket_text is identical to another ticket's text.
+  # Off by default: identical auto-generated tickets can still carry different
+  # resolution articles.
+  drop_identical_text: false
+  # Example TicketNumbers stored per exclusion reason in the report.
+  report_samples: 5
+
+# -----------------------------------------------------------------------------
+# Construction of ticket_text (used for historical AND incoming tickets)
+# Changing anything here requires a full rebuild (update_index.py detects it).
+# -----------------------------------------------------------------------------
+text:
+  include_additional_information: false
+  strip_boilerplate: true      # "Imported ticket of type 1. Gesprekslog and state Open."
+  remove_urls: true            # image links etc. carry no meaning for similarity
+  mask_emails: true
+  mask_phone_numbers: true
+  max_title_chars: 300
+  max_body_chars: 4000
+
+# -----------------------------------------------------------------------------
+# Embedding model
+# The server is CPU-only (64 GB RAM): bge-m3 runs on all cores with torch.
+# Expect several tickets per second per core group - the first build of
+# ~900k tickets takes many hours, which is why it is resumable (shards).
+# -----------------------------------------------------------------------------
+embedding:
+  model_name: BAAI/bge-m3      # multilingual (Dutch) dense retriever, 1024 dims
+  model_revision: null         # pin a Hugging Face commit for full reproducibility
+  # Tokens per text. Median ticket_text is ~400 chars (~120 tokens), p95 ~1300
+  # chars, so 512 rarely truncates. 256 makes the longest 5% faster on CPU.
+  max_seq_length: 512
+  batch_size: 16               # CPU: 16-32. Texts are length-sorted, so little padding.
+  device: cpu                  # cpu | cuda | auto
+  cpu_threads: 0               # 0 = torch default (all physical cores)
+  fp16_on_gpu: true            # only used when device is cuda
+  storage_dtype: float16       # float16 halves disk/RAM; float32 for exact storage
+  shard_rows: 20000            # embeddings are saved per shard -> a stopped run resumes
+  # At query start the model re-embeds a probe sentence and compares it with the
+  # vector stored at build time. A mismatch means a different model -> error.
+  strict_model_check: true
+
+# -----------------------------------------------------------------------------
+# FAISS vector index
+# -----------------------------------------------------------------------------
+index:
+  type: auto                   # auto | flat | ivf_flat | ivf_sq8
+  # auto: exact Flat index up to this size, IVF above. 909k x 1024 float32
+  # = ~3.7 GB RAM, comfortable on the 64 GB server.
+  flat_max_rows: 1500000
+  ivf_nlist: auto              # auto = 4 * sqrt(rows)
+  ivf_nprobe: 32
+  train_sample_rows: 200000
+  # When the metadata filter leaves at most this many candidates, cosine is
+  # computed for all of them directly (exact, no FAISS needed).
+  exact_search_max_candidates: 100000
+  # FAISS fetches top_k * overfetch ids, which are then re-scored exactly.
+  faiss_overfetch: 20
+  faiss_threads: 0             # 0 = FAISS default (all cores)
+  seed: 42
+
+# -----------------------------------------------------------------------------
+# Metadata filtering of historical candidates
+# -----------------------------------------------------------------------------
+filters:
+  mode: relaxed                # strict = never relax | relaxed = relax step by step
+  # Fields that must match exactly when the incoming ticket has a known value.
+  # A field the incoming ticket does not know is skipped, never guessed.
+  fields: [IspId, TicketTypeId, CallReasonId, TechnologyType, NetworkOperator, RootCauseId]
+  # Order in which filters are dropped when too few results are found.
+  # Fields not listed here (IspId) are never relaxed.
+  relax_order: [RootCauseId, NetworkOperator, TechnologyType, TicketTypeId, CallReasonId]
+  # Filters are relaxed while fewer than top_k results reach min_similarity.
+  # With prefer_stricter_matches: false they are also relaxed while fewer than
+  # this many candidates pass, so the similarity ranking has enough to choose from.
+  min_candidates: 20
+  # true: matches from stricter filter levels rank before matches that were
+  # only found after relaxing. false: rank everything purely by similarity.
+  prefer_stricter_matches: true
+  case_insensitive_fields: [IspId, NetworkOperator, TechnologyType]
+  # Extra values that mean "unknown" for metadata (in addition to csv.null_tokens).
+  unknown_values: ["???", "Unknown", "-1"]
+  # Names an incoming ticket may use -> the verified source column.
+  # The data has no Vdf column: "VDF" is a value of IspId.
+  input_aliases:
+    Vdf: IspId
+
+# -----------------------------------------------------------------------------
+# Retrieval and output
+# -----------------------------------------------------------------------------
+retrieval:
+  top_k: 5
+  # Cosine similarity below this is never returned, even if fewer than top_k remain.
+  min_similarity: 0.55
+  output_fields: [TicketNumber, Title_ticket, BodyText_ticket, TicketTypeId, IspId,
+                  NetworkOperator, CallReasonId, RootCauseId, TechnologyType,
+                  SolutionId, TicketQueueId, State, SubState, CloseDate]
+
+article_ranking:
+  # combined      = weighted mix of source-ticket similarity and article-text similarity
+  # source_ticket = article inherits the similarity of its ticket
+  # article_text  = cosine between the incoming ticket and the article text
+  mode: combined
+  source_ticket_weight: 0.5
+  article_text_weight: 0.5
+  # Only the first N characters are embedded for ranking (on CPU this is the
+  # main query-time cost); the full article text is always returned.
+  max_chars_for_embedding: 1000
+  max_articles_per_ticket: 25
+
+# -----------------------------------------------------------------------------
+# AI resolution advisor (llm_advisor.py)
+# Sends the new ticket + the top similar tickets + ALL their articles in full
+# to an OpenAI-compatible chat-completions endpoint. No summarisation and no
+# compression: the model reads exactly what was recorded.
+# The token is never stored here: export it on the server, e.g.
+#   export GOCARE_LLM_TOKEN='...'      (or put it in a git-ignored .env file)
+# -----------------------------------------------------------------------------
+llm:
+  enabled: true
+  base_url: "https://litellm.dev01.datascience-tmnl.nl"   # gateway; empty = api.openai.com
+  model: "openai/gpt-oss-120b"
+  token_env: GOCARE_LLM_TOKEN
+  auth_scheme: bearer          # bearer -> Authorization: Bearer | api_key -> x-api-key
+  # next_step = only the single next action (as in TRS_V3.0)
+  # full_plan = the ordered list of steps
+  response_mode: next_step
+  max_plan_steps: 8            # used when response_mode is full_plan
+  max_tickets: 5               # similar tickets sent to the model
+  # Character limits per text. 0 = no limit (send everything as recorded).
+  max_ticket_body_chars: 0
+  max_article_chars: 0
+  # Remove e-mail addresses, phone numbers and URLs before text leaves the server.
+  mask_personal_data: true
+  reasoning_effort: medium     # low | medium | high (dropped if the gateway rejects it)
+  max_tokens: 16000            # thinking + answer
+  temperature: null            # null = model default
+  timeout_s: 180
+  auto_run: false              # UI: run automatically after every search
+  system_prompt: ""            # empty = the default prompt in llm_advisor.py
+
+# -----------------------------------------------------------------------------
+# Streamlit UI (app.py)
+# -----------------------------------------------------------------------------
+ui:
+  title: "Go-Care AI Ticket Recommendation"
+  body_preview_chars: 1200
+
+logging:
+  level: INFO
+  file_name: gocare.log        # JSON lines, rotated
+  rotate_max_bytes: 20971520
+  rotate_backups: 5

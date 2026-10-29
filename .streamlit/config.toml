@@ -1,0 +1,7 @@
+[server]
+headless = true
+port = 8501
+fileWatcherType = "none"     # the app loads a large index once; never reload on file changes
+
+[browser]
+gatherUsageStats = false

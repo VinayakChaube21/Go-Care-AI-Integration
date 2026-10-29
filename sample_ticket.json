@@ -1,0 +1,11 @@
+{
+  "TicketNumber": "NEW-001",
+  "Title_ticket": "Nazorg - Geen Licht",
+  "BodyText_ticket": "Odido Fiber installatie. Geen licht op de FTU na installatie, pop niet toegankelijk. Klant heeft geen internet.",
+  "IspId": "VDF",
+  "TicketTypeId": "1",
+  "CallReasonId": "46",
+  "RootCauseId": null,
+  "TechnologyType": "Gpon",
+  "NetworkOperator": "REG"
+}

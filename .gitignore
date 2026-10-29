@@ -1,0 +1,21 @@
+# Data and generated artifacts are never committed (copy data to the server separately)
+Raw Data/
+data/
+artifacts/
+*.csv
+
+# Secrets (LLM token)
+.env
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Hugging Face model cache
+.hf_cache/
+
+# Editors
+.vscode/
+.idea/
